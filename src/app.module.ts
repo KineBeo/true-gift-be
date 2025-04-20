@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 import { UsersModule } from './users/users.module';
 import { FilesModule } from './files/files.module';
 import { AuthModule } from './auth/auth.module';
+import { AuthFacebookModule } from './auth-facebook/auth-facebook.module';
+import { AuthGoogleModule } from './auth-google/auth-google.module';
+import { AuthAppleModule } from './auth-apple/auth-apple.module';
 import databaseConfig from './database/config/database.config';
 import authConfig from './auth/config/auth.config';
 import appConfig from './config/app.config';
@@ -13,9 +16,6 @@ import appleConfig from './auth-apple/config/apple.config';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AuthAppleModule } from './auth-apple/auth-apple.module';
-import { AuthFacebookModule } from './auth-facebook/auth-facebook.module';
-import { AuthGoogleModule } from './auth-google/auth-google.module';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import { TypeOrmConfigService } from './database/typeorm-config.service';
 import { MailModule } from './mail/mail.module';
@@ -27,6 +27,9 @@ import { MailerModule } from './mailer/mailer.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MongooseConfigService } from './database/mongoose-config.service';
 import { DatabaseConfig } from './database/config/database-config.type';
+import { PhotosModule } from './files/infrastructure/uploader/photos.module';
+import { FriendsModule } from './friends/friends.module';
+import { MessagesModule } from './messages/messages.module';
 
 // <database-block>
 const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
@@ -41,10 +44,6 @@ const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
       },
     });
 // </database-block>
-
-import { FriendsModule } from './friends/friends.module';
-
-import { MessagesModule } from './messages/messages.module';
 
 @Module({
   imports: [
@@ -98,6 +97,7 @@ import { MessagesModule } from './messages/messages.module';
     MailModule,
     MailerModule,
     HomeModule,
+    PhotosModule,
   ],
 })
 export class AppModule {}

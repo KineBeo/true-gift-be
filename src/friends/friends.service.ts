@@ -229,4 +229,13 @@ export class FriendsService {
       }
     }
   }
+
+  async findFriendship(query: any): Promise<any | null> {
+    try {
+      return await this.friendsRepository.findOne(query);
+    } catch (error) {
+      console.error('Error finding friendship:', error);
+      return null;
+    }
+  }
 }
