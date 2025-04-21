@@ -11,6 +11,7 @@ import { FileConfig, FileDriver } from './config/file-config.type';
 import { FilesLocalModule } from './infrastructure/uploader/local/files.module';
 import { FilesS3Module } from './infrastructure/uploader/s3/files.module';
 import { FilesS3PresignedModule } from './infrastructure/uploader/s3-presigned/files.module';
+import { FilesIpfsModule } from './infrastructure/uploader/ipfs/files.module';
 import { DatabaseConfig } from '../database/config/database-config.type';
 import databaseConfig from '../database/config/database.config';
 
@@ -26,7 +27,9 @@ const infrastructureUploaderModule =
     ? FilesLocalModule
     : (fileConfig() as FileConfig).driver === FileDriver.S3
       ? FilesS3Module
-      : FilesS3PresignedModule;
+      : (fileConfig() as FileConfig).driver === FileDriver.IPFS
+        ? FilesIpfsModule
+        : FilesS3PresignedModule;
 
 @Module({
   imports: [

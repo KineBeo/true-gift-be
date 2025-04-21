@@ -59,18 +59,40 @@ export class PhotoController {
     })
   )
   async uploadPhoto(@UploadedFile() file: Express.Multer.File, @Request() req) {
+    console.log('Upload request received. Headers:', req.headers['content-type']);
+    console.log('Request body keys:', Object.keys(req.body || {}));
+    
+    // Handle missing file more gracefully
     if (!file) {
-      throw new BadRequestException('No file uploaded');
+      console.error('No file uploaded or file parsing failed');
+      throw new BadRequestException('No file found in the upload. Please ensure a file is attached with field name "file"');
     }
     
+    // Log detailed file information for debugging
     console.log('File received:', {
       originalname: file.originalname,
       mimetype: file.mimetype,
       size: file.size,
-      buffer: !!file.buffer, // Just log if buffer exists, not the entire buffer
+      buffer: file.buffer ? `Buffer present (${file.buffer.length} bytes)` : 'No buffer',
+      fieldname: file.fieldname
     });
     
-    return this.photoService.savePhoto(file, req.user.id);
+    try {
+      const result = await this.photoService.savePhoto(file, req.user.id);
+      return result;
+    } catch (error) {
+      console.error('Error in photo upload controller:', error);
+      
+      // More descriptive error
+      const message = error.message || 'Failed to save photo';
+      const status = error.status || 500;
+      
+      throw new BadRequestException({
+        message,
+        details: error.stack,
+        statusCode: status,
+      });
+    }
   }
 
   @Get('me')

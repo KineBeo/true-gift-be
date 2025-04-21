@@ -31,6 +31,24 @@ class EnvironmentVariablesValidator {
   )
   @IsString()
   AWS_S3_REGION: string;
+
+  @ValidateIf((envValues) =>
+    [FileDriver.IPFS].includes(envValues.FILE_DRIVER),
+  )
+  @IsString()
+  PINATA_API_KEY: string;
+
+  @ValidateIf((envValues) =>
+    [FileDriver.IPFS].includes(envValues.FILE_DRIVER),
+  )
+  @IsString()
+  PINATA_SECRET_API_KEY: string;
+
+  @ValidateIf((envValues) =>
+    [FileDriver.IPFS].includes(envValues.FILE_DRIVER),
+  )
+  @IsString()
+  PINATA_GATEWAY_URL: string;
 }
 
 export default registerAs<FileConfig>('file', () => {
@@ -43,6 +61,9 @@ export default registerAs<FileConfig>('file', () => {
     secretAccessKey: process.env.SECRET_ACCESS_KEY,
     awsDefaultS3Bucket: process.env.AWS_DEFAULT_S3_BUCKET,
     awsS3Region: process.env.AWS_S3_REGION,
+    pinataApiKey: process.env.PINATA_API_KEY,
+    pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY,
+    pinataGatewayUrl: process.env.PINATA_GATEWAY_URL,
     maxFileSize: 5242880, // 5mb
   };
 });
