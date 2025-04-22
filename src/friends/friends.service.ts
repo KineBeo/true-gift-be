@@ -238,4 +238,12 @@ export class FriendsService {
       return null;
     }
   }
+
+  async findFriendshipById(id: string): Promise<FriendsDto | null> {
+    return this.friendsRepository.findOne({
+      where: {
+        id,
+      } as any,
+    });
+  }
 }

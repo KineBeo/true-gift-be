@@ -35,10 +35,8 @@ import { User } from './domain/user';
 import { UsersService } from './users.service';
 import { RolesGuard } from '../roles/roles.guard';
 import { infinityPagination } from '../utils/infinity-pagination';
+import { SearchUserDto } from './dto/search-user.dto';
 
-@ApiBearerAuth()
-@Roles(RoleEnum.admin)
-@UseGuards(AuthGuard('jwt'), RolesGuard)
 @ApiTags('Users')
 @Controller({
   path: 'users',
@@ -47,6 +45,9 @@ import { infinityPagination } from '../utils/infinity-pagination';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  @ApiBearerAuth()
+  @Roles(RoleEnum.admin)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @ApiCreatedResponse({
     type: User,
   })
@@ -59,6 +60,9 @@ export class UsersController {
     return this.usersService.create(createProfileDto);
   }
 
+  @ApiBearerAuth()
+  @Roles(RoleEnum.admin)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @ApiOkResponse({
     type: InfinityPaginationResponse(User),
   })
@@ -89,6 +93,37 @@ export class UsersController {
     );
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOkResponse({
+    type: InfinityPaginationResponse(User),
+  })
+  @Get('search')
+  @HttpCode(HttpStatus.OK)
+  async searchUsers(
+    @Query() query: SearchUserDto,
+  ): Promise<InfinityPaginationResponseDto<User>> {
+    const page = query?.page ?? 1;
+    let limit = query?.limit ?? 10;
+    if (limit > 50) {
+      limit = 50;
+    }
+
+    const result = await this.usersService.searchUsers(
+      query.search,
+      page,
+      limit,
+    );
+
+    return {
+      data: result.data,
+      hasNextPage: (page * limit) < result.total,
+    };
+  }
+
+  @ApiBearerAuth()
+  @Roles(RoleEnum.admin)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @ApiOkResponse({
     type: User,
   })
@@ -106,6 +141,9 @@ export class UsersController {
     return this.usersService.findById(id);
   }
 
+  @ApiBearerAuth()
+  @Roles(RoleEnum.admin)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @ApiOkResponse({
     type: User,
   })
@@ -126,6 +164,9 @@ export class UsersController {
     return this.usersService.update(id, updateProfileDto);
   }
 
+  @ApiBearerAuth()
+  @Roles(RoleEnum.admin)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Delete(':id')
   @ApiParam({
     name: 'id',

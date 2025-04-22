@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 
-import { FindOptionsWhere, Repository, In } from 'typeorm';
+import { FindOptionsWhere, Repository, In, Like, ILike } from 'typeorm';
 import { UserEntity } from '../entities/user.entity';
 import { NullableType } from '../../../../../utils/types/nullable.type';
 import { FilterUserDto, SortUserDto } from '../../../../dto/query-user.dto';
@@ -97,6 +97,28 @@ export class UsersRelationalRepository implements UserRepository {
     });
 
     return entity ? UserMapper.toDomain(entity) : null;
+  }
+  
+  async searchUsers(searchQuery: string, options: IPaginationOptions): Promise<{ users: User[], total: number }> {
+    const searchTerm = `%${searchQuery}%`;
+    
+    const [entities, count] = await this.usersRepository.findAndCount({
+      where: [
+        { email: ILike(searchTerm) },
+        { firstName: ILike(searchTerm) },
+        { lastName: ILike(searchTerm) },
+      ],
+      skip: (options.page - 1) * options.limit,
+      take: options.limit,
+      order: {
+        firstName: 'ASC',
+      },
+    });
+    
+    return {
+      users: entities.map(user => UserMapper.toDomain(user)),
+      total: count,
+    };
   }
 
   async update(id: User['id'], payload: Partial<User>): Promise<User> {

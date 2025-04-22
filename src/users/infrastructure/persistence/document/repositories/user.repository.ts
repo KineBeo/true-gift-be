@@ -92,6 +92,33 @@ export class UsersDocumentRepository implements UserRepository {
     return userObject ? UserMapper.toDomain(userObject) : null;
   }
 
+  async searchUsers(searchQuery: string, options: IPaginationOptions): Promise<{ users: User[], total: number }> {
+    const escapedQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex = new RegExp(escapedQuery, 'i');
+    
+    const query = {
+      $or: [
+        { email: searchRegex },
+        { firstName: searchRegex },
+        { lastName: searchRegex }
+      ]
+    };
+    
+    const [userObjects, count] = await Promise.all([
+      this.usersModel
+        .find(query)
+        .skip((options.page - 1) * options.limit)
+        .limit(options.limit)
+        .sort({ firstName: 1 }),
+      this.usersModel.countDocuments(query)
+    ]);
+    
+    return {
+      users: userObjects.map(userObject => UserMapper.toDomain(userObject)),
+      total: count
+    };
+  }
+
   async update(id: User['id'], payload: Partial<User>): Promise<User | null> {
     const clonedPayload = { ...payload };
     delete clonedPayload.id;

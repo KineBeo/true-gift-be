@@ -31,6 +31,8 @@ export abstract class UserRepository {
     provider: User['provider'];
   }): Promise<NullableType<User>>;
 
+  abstract searchUsers(searchQuery: string, options: IPaginationOptions): Promise<{ users: User[], total: number }>;
+
   abstract update(
     id: User['id'],
     payload: DeepPartial<User>,

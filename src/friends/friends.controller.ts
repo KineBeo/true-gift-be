@@ -11,6 +11,7 @@ import {
   Query,
   UseGuards,
   Request,
+  NotFoundException,
 } from '@nestjs/common';
 import { FriendsService } from './friends.service';
 import { CreateFriendsDto } from './dto/create-friends.dto';
@@ -88,11 +89,24 @@ export class FriendsController {
   @ApiOperation({ summary: 'Chấp nhận lời mời kết bạn' })
   @ApiResponse({ status: 200 })
   @HttpCode(HttpStatus.OK)
-  acceptFriendRequest(
+  async acceptFriendRequest(
     @Request() req,
-    @Param('friendId') friendId: string,
+    @Param('friendId') friendshipId: string,
   ) {
-    return this.friendsService.acceptFriendRequest(req.user.id, Number(friendId));
+    // Find the friendship relationship first
+    const friendship = await this.friendsService.findFriendshipById(friendshipId);
+    
+    if (!friendship) {
+      throw new NotFoundException('Friend request not found');
+    }
+    
+    // Make sure the current user is the target of the friend request
+    if (friendship.friendId !== req.user.id) {
+      throw new NotFoundException('This friend request is not for you');
+    }
+    
+    // Accept the friend request using the sender's userId and the recipient's user ID (current user)
+    return this.friendsService.acceptFriendRequest(req.user.id, friendship.userId);
   }
 
   @Get(':id')

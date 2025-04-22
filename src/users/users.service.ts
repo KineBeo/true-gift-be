@@ -285,4 +285,24 @@ export class UsersService {
   async remove(id: User['id']): Promise<void> {
     await this.usersRepository.remove(id);
   }
+
+  async searchUsers(
+    searchQuery: string,
+    page = 1,
+    limit = 10,
+  ): Promise<{ data: User[]; total: number }> {
+    if (limit > 50) {
+      limit = 50; // Cap maximum limit to prevent abuse
+    }
+    
+    const { users, total } = await this.usersRepository.searchUsers(searchQuery, {
+      page,
+      limit,
+    });
+    
+    return {
+      data: users,
+      total,
+    };
+  }
 }
