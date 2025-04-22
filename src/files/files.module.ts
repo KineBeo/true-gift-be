@@ -29,7 +29,7 @@ const infrastructureUploaderModule =
       ? FilesS3Module
       : (fileConfig() as FileConfig).driver === FileDriver.IPFS
         ? FilesIpfsModule
-        : FilesS3PresignedModule;
+      : FilesS3PresignedModule;
 
 @Module({
   imports: [

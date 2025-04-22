@@ -106,14 +106,32 @@ export class PhotoController {
   @Get('friends/:friendId')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get photos from a friend' })
+  @ApiOperation({ summary: 'Get photos from a specific friend' })
   async getFriendPhotos(
+    @Param('friendId') friendId: number,
     @Request() req,
-    @Param('friendId') friendId: string,
     @Query('page') page = 1,
     @Query('limit') limit = 10,
   ) {
-    return this.photoService.getFriendPhotos(req.user.id, Number(friendId), { page, limit });
+    return this.photoService.getFriendPhotos(req.user.id, friendId, {
+      page,
+      limit,
+    });
+  }
+
+  @Get('friends')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get photos from all friends' })
+  async getAllFriendsPhotos(
+    @Request() req,
+    @Query('page') page = 1,
+    @Query('limit') limit = 20,
+  ) {
+    return this.photoService.getAllFriendsPhotos(req.user.id, {
+      page,
+      limit,
+    });
   }
 
   @Get(':id')

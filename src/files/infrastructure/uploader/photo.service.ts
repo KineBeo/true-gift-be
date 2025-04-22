@@ -656,6 +656,109 @@ export class PhotoService {
     return this.getUserPhotos(friendId, options);
   }
 
+  /**
+   * Get photos from all friends of the given user
+   * @param userId User ID requesting the photos
+   * @param options Pagination options
+   * @returns Photos from all friends with pagination metadata
+   */
+  async getAllFriendsPhotos(
+    userId: number,
+    options: { page: number; limit: number },
+  ) {
+    try {
+      // Get all friends of the user using the correct method from FriendsService
+      const friends = await this.friendsService.findAllFriendsForConversation(userId);
+
+      if (!friends || friends.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: options.page,
+            limit: options.limit,
+          },
+        };
+      }
+
+      // Extract friend IDs from the friendship records
+      const friendIds = friends.map(friendship => 
+        friendship.userId === userId ? friendship.friendId : friendship.userId
+      );
+
+      // Get usernames for each friend to include in the response
+      const friendUsernames = {};
+      friends.forEach(friendship => {
+        const friendId = friendship.userId === userId ? friendship.friendId : friendship.userId;
+        const friendUser = friendship.userId === userId ? friendship.friend : friendship.user;
+        
+        if (friendUser) {
+          // Use a type assertion to access the properties
+          const user = friendUser as any;
+          const name = [user.firstName, user.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+          
+          friendUsernames[friendId] = name || `Friend ${friendId}`;
+        }
+      });
+
+      // Fetch photos from all friends
+      const { page, limit } = options;
+      const skip = (page - 1) * limit;
+      
+      const [photos, total] = await this.userPhotoRepository.findAndCount({
+        where: { userId: In(friendIds) },
+        order: { createdAt: 'DESC' },
+        skip,
+        take: limit,
+      });
+      
+      if (photos.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page,
+            limit,
+          },
+        };
+      }
+
+      // Get file details for all photos
+      const fileIds = photos.map(photo => photo.fileId);
+      const files = await this.fileRepository.findBy({ id: In(fileIds) });
+      
+      // Map photos with file information and friend names
+      const photosWithFiles = photos.map(photo => {
+        const file = files.find(f => f.id === photo.fileId);
+        const userName = friendUsernames[photo.userId] || null;
+        
+        return {
+          id: photo.id,
+          fileId: photo.fileId,
+          userId: photo.userId,
+          userName,
+          createdAt: photo.createdAt,
+          url: file ? this.getPhotoUrl(file.id, file.path) : null,
+        };
+      });
+      
+      return {
+        data: photosWithFiles,
+        meta: {
+          total,
+          page,
+          limit,
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching friends photos:', error);
+      throw new BadRequestException(`Failed to fetch friends photos: ${error.message}`);
+    }
+  }
+
   async getPhoto(photoId: string, userId: number) {
     const photo = await this.userPhotoRepository.findOne({
       where: { id: photoId },
