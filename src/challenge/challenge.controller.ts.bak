@@ -1,0 +1,438 @@
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Challenge, UserStreak, Achievement } from './domain';
+import { YoloService } from './services/yolo-service';
+import { DeepseekService } from './services/deepseek-service';
+import { UsersService } from '../users/users.service';
+import * as fs from 'fs';
+import * as path from 'path';
+import { PhotoService } from '../files/infrastructure/uploader/photo.service';
+import { ChallengeResponseDto } from './dto/challenge-response.dto';
+import { TodayChallengeDto } from './dto/today-challenge.dto';
+import { ChallengeHistoryDto } from './dto/challenge-history.dto';
+
+@Injectable()
+export class ChallengeService {
+  private readonly logger = new Logger(ChallengeService.name);
+
+  constructor(
+    @InjectRepository(Challenge)
+    private challengeRepository: Repository<Challenge>,
+    @InjectRepository(UserStreak)
+    private userStreakRepository: Repository<UserStreak>,
+    @InjectRepository(Achievement)
+    private achievementRepository: Repository<Achievement>,
+    private yoloService: YoloService,
+    private deepseekService: DeepseekService,
+    private usersService: UsersService,
+    private photoService: PhotoService,
+  ) {}
+
+  /**
+   * Get today's challenge for a user
+   * If no challenge exists for today, create one
+   */
+  async getTodayChallenge(userId: number): Promise<TodayChallengeDto> {
+    // Get today's date, strip time part
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Tomorrow at midnight
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Look for existing challenge for today
+    let challenge = await this.challengeRepository.findOne({
+      where: {
+        userId,
+        createdAt: today,
+      },
+    });
+
+    // If no challenge exists for today, create one
+    if (!challenge) {
+      // Get a random class for today's challenge
+      const randomClass = this.yoloService.getRandomClass();
+      
+      // Generate a description for the challenge
+      const description = await this.deepseekService.generateChallengeDescription(
+        randomClass.name,
+      );
+
+      // Create a new challenge
+      challenge = this.challengeRepository.create({
+        userId,
+        class: randomClass.name,
+        description,
+        isCompleted: false,
+        expiresAt: tomorrow,
+      });
+
+      await this.challengeRepository.save(challenge);
+    }
+
+    // Get user streak
+    const userStreak = await this.getUserStreak(userId);
+
+    // Convert to DTO
+    return {
+      id: challenge.id,
+      title: "Today's Challenge",
+      description: challenge.description,
+      class: challenge.class,
+      createdAt: challenge.createdAt.toISOString(),
+      expiresAt: challenge.expiresAt.toISOString(),
+      isCompleted: challenge.isCompleted,
+      currentStreak: userStreak.currentStreak,
+    };
+  }
+
+  /**
+   * Submit a challenge photo
+   */
+  async submitChallenge(
+    userId: number,
+    filePath: string,
+    originalFilename: string,
+    challengeId?: string,
+  ): Promise<ChallengeResponseDto> {
+    // Get the challenge
+    const challenge = challengeId
+      ? await this.challengeRepository.findOne({ where: { id: challengeId, userId } })
+      : await this.getTodaysChallengeForUser(userId);
+
+    if (!challenge) {
+      throw new NotFoundException('Challenge not found');
+    }
+
+    // If challenge is already completed, return existing result
+    if (challenge.isCompleted) {
+      return {
+        success: true,
+        message: 'You have already completed this challenge!',
+        score: challenge.score ?? 0,
+        isMatch: true,
+        detectedClass: challenge.detectedClass ?? '',
+        streakIncreased: false,
+        currentStreak: (await this.getUserStreak(userId)).currentStreak,
+        unlockedAchievements: [],
+      };
+    }
+
+    // Submit the file to YOLO for prediction
+    const prediction = await this.yoloService.predictImage(filePath);
+
+    // Check if the prediction matches the challenge class
+    const isMatch = prediction.className.toLowerCase() === challenge.class.toLowerCase();
+    const success = isMatch && prediction.score >= 70;
+
+    // Upload the photo to storage
+    const photoUploadResult = await this.uploadChallengePhoto(userId, filePath, originalFilename);
+
+    // Update challenge with results
+    challenge.isCompleted = success;
+    challenge.completedAt = success ? new Date() : undefined;
+    challenge.photoId = photoUploadResult?.id || undefined;
+    challenge.score = prediction.score;
+    challenge.detectedClass = prediction.className;
+
+    await this.challengeRepository.save(challenge);
+
+    // If successful, update streak
+    let streakIncreased = false;
+    let unlockedAchievements: string[] = [];
+
+    if (success) {
+      const streakResult = await this.updateStreak(userId);
+      streakIncreased = streakResult.streakIncreased;
+      unlockedAchievements = streakResult.unlockedAchievements;
+    } else {
+      // If not successful, update attempt count
+      await this.incrementAttemptCount(userId);
+    }
+
+    // Get current streak
+    const userStreak = await this.getUserStreak(userId);
+
+    // Return response
+    return {
+      success,
+      message: success
+        ? 'Congratulations! Your photo passed the challenge!'
+        : 'The image does not match the challenge or score is too low.',
+      score: prediction.score,
+      isMatch,
+      detectedClass: prediction.className,
+      streakIncreased,
+      currentStreak: userStreak.currentStreak,
+      unlockedAchievements,
+    };
+  }
+
+  /**
+   * Get user's challenge history, streaks, and achievements
+   */
+  async getChallengeHistory(userId: number): Promise<ChallengeHistoryDto> {
+    // Get user streak info
+    const userStreak = await this.getUserStreak(userId);
+
+    // Get all achievements for user
+    const achievements = await this.achievementRepository.find({
+      where: { userId, isUnlocked: true },
+    });
+
+    // Get all challenges for user, sorted by creation date (newest first)
+    const challenges = await this.challengeRepository.find({
+      where: { userId },
+      order: { createdAt: 'DESC' },
+    });
+
+    // Convert to DTO
+    return {
+      currentStreak: userStreak.currentStreak,
+      highestStreak: userStreak.highestStreak,
+      totalCompleted: userStreak.totalCompleted,
+      totalAttempted: userStreak.totalAttempted,
+      achievements: achievements.map(a => ({
+        id: a.achievementCode,
+        name: a.name,
+        description: a.description,
+        unlockedAt: a.unlockedAt?.toISOString() || '',
+      })),
+      history: challenges.map(c => ({
+        id: c.id,
+        description: c.description,
+        class: c.class,
+        createdAt: c.createdAt.toISOString(),
+        isCompleted: c.isCompleted,
+        completedAt: c.completedAt?.toISOString(),
+        score: c.score,
+        photoId: c.photoId,
+      })),
+    };
+  }
+
+  /**
+   * Get today's challenge for a user (internal helper)
+   */
+  private async getTodaysChallengeForUser(userId: number): Promise<Challenge> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const challenge = await this.challengeRepository.findOne({
+      where: {
+        userId,
+        createdAt: today,
+      },
+    });
+
+    if (!challenge) {
+      throw new NotFoundException('No challenge found for today');
+    }
+
+    return challenge;
+  }
+
+  /**
+   * Get or create user streak info
+   */
+  private async getUserStreak(userId: number): Promise<UserStreak> {
+    let streak = await this.userStreakRepository.findOne({
+      where: { userId },
+    });
+
+    if (!streak) {
+      streak = this.userStreakRepository.create({
+        userId,
+        currentStreak: 0,
+        highestStreak: 0,
+        totalCompleted: 0,
+        totalAttempted: 0,
+        lastCompletedAt: new Date(0), // Unix epoch
+      });
+      await this.userStreakRepository.save(streak);
+    }
+
+    return streak;
+  }
+
+  /**
+   * Update user streak when challenge is completed
+   */
+  private async updateStreak(
+    userId: number,
+  ): Promise<{ streakIncreased: boolean; unlockedAchievements: string[] }> {
+    // Get user streak
+    const streak = await this.getUserStreak(userId);
+    
+    // Increment total completed
+    streak.totalCompleted += 1;
+    
+    // Check if streak is broken
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const lastCompleted = new Date(streak.lastCompletedAt);
+    lastCompleted.setHours(0, 0, 0, 0);
+    
+    // If last completed is today, no change
+    if (lastCompleted.getTime() === today.getTime()) {
+      await this.userStreakRepository.save(streak);
+      return { streakIncreased: false, unlockedAchievements: [] };
+    }
+    
+    let streakIncreased = false;
+    const unlockedAchievements: string[] = [];
+    
+    // Check if last completed was yesterday or earlier
+    if (lastCompleted.getTime() === yesterday.getTime()) {
+      // Streak continues
+      streak.currentStreak += 1;
+      streakIncreased = true;
+    } else {
+      // Streak broken, reset
+      streak.currentStreak = 1;
+      streakIncreased = true;
+    }
+    
+    // Update last completed date
+    streak.lastCompletedAt = today;
+    
+    // Check if highest streak is beaten
+    if (streak.currentStreak > streak.highestStreak) {
+      streak.highestStreak = streak.currentStreak;
+    }
+    
+    // Save streak
+    await this.userStreakRepository.save(streak);
+    
+    // Check for streak achievements
+    if (streak.currentStreak === 7) {
+      const newAchievement = await this.unlockAchievement(
+        userId,
+        'streak-7',
+        '7-Day Streak',
+        'Completed challenges for 7 consecutive days',
+      );
+      if (newAchievement) {
+        unlockedAchievements.push(newAchievement.name);
+      }
+    } else if (streak.currentStreak === 30) {
+      const newAchievement = await this.unlockAchievement(
+        userId,
+        'streak-30',
+        '30-Day Streak',
+        'Completed challenges for 30 consecutive days',
+      );
+      if (newAchievement) {
+        unlockedAchievements.push(newAchievement.name);
+      }
+    }
+    
+    // First completion achievement
+    if (streak.totalCompleted === 1) {
+      const newAchievement = await this.unlockAchievement(
+        userId,
+        'first-challenge',
+        'First Challenge',
+        'Completed your first daily challenge',
+      );
+      if (newAchievement) {
+        unlockedAchievements.push(newAchievement.name);
+      }
+    }
+    
+    return { streakIncreased, unlockedAchievements };
+  }
+
+  /**
+   * Increment attempt count when challenge is attempted but not completed
+   */
+  private async incrementAttemptCount(userId: number): Promise<void> {
+    // Get user streak
+    const streak = await this.getUserStreak(userId);
+    
+    // Increment total attempted
+    streak.totalAttempted += 1;
+    
+    // Save streak
+    await this.userStreakRepository.save(streak);
+  }
+
+  /**
+   * Unlock an achievement for a user
+   */
+  private async unlockAchievement(
+    userId: number,
+    code: string,
+    name: string,
+    description: string,
+  ): Promise<Achievement | null> {
+    // Check if achievement already exists
+    let achievement = await this.achievementRepository.findOne({
+      where: { userId, achievementCode: code },
+    });
+    
+    if (achievement) {
+      // If already unlocked, return null
+      if (achievement.isUnlocked) {
+        return null;
+      }
+      
+      // If exists but not unlocked, unlock it
+      achievement.isUnlocked = true;
+      achievement.unlockedAt = new Date();
+      await this.achievementRepository.save(achievement);
+      return achievement;
+    }
+    
+    // Create new achievement
+    achievement = this.achievementRepository.create({
+      userId,
+      achievementCode: code,
+      name,
+      description,
+      isUnlocked: true,
+      unlockedAt: new Date(),
+    });
+    
+    await this.achievementRepository.save(achievement);
+    return achievement;
+  }
+
+  /**
+   * Upload challenge photo to storage
+   */
+  private async uploadChallengePhoto(
+    userId: number,
+    filePath: string,
+    originalFilename: string,
+  ): Promise<{ id: string; path: string } | null> {
+    try {
+      // Use the existing photo service to handle the upload
+      // In a real app, you might want to use a specific challenge photo method
+      const uploadResult = await this.photoService.uploadPhoto(
+        {
+          id: userId,
+        } as any, // Add required user fields as needed
+        {
+          path: filePath,
+          originalname: originalFilename,
+          mimetype: 'image/jpeg', // Simplified, would determine from file in real app
+        } as any, // Add required file fields as needed
+      );
+
+      return {
+        id: uploadResult.id,
+        path: uploadResult.path,
+      };
+    } catch (error) {
+      this.logger.error(`Error uploading challenge photo: ${error.message}`);
+      return null;
+    }
+  }
+}

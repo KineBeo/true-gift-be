@@ -30,6 +30,7 @@ import { DatabaseConfig } from './database/config/database-config.type';
 import { PhotosModule } from './files/infrastructure/uploader/photos.module';
 import { FriendsModule } from './friends/friends.module';
 import { MessagesModule } from './messages/messages.module';
+import { ChallengeModule } from './challenge/challenge.module';
 
 // <database-block>
 const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
@@ -49,6 +50,7 @@ const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
   imports: [
     FriendsModule,
     MessagesModule,
+    ChallengeModule,
     ConfigModule.forRoot({
       isGlobal: true,
       load: [
