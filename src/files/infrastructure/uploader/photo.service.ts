@@ -759,6 +759,109 @@ export class PhotoService {
     }
   }
 
+  /**
+   * Get photos for AI analysis from both the user and their friends
+   * @param userId User ID requesting the photos
+   * @param maxPhotos Maximum number of photos to return
+   * @returns Consolidated photos data suitable for AI processing
+   */
+  async getPhotosForAI(userId: number, maxPhotos: number = 50): Promise<any> {
+    try {
+      // Get user's own photos (most recent first)
+      const userPhotos = await this.userPhotoRepository.find({
+        where: { userId },
+        order: { createdAt: 'DESC' },
+        take: Math.ceil(maxPhotos / 2), // Half of max photos from user
+      });
+      
+      // Get photos from friends
+      const friends = await this.friendsService.findAllFriendsForConversation(userId);
+      
+      const friendIds = friends.map(friendship => 
+        friendship.userId === userId ? friendship.friendId : friendship.userId
+      );
+      
+      // Create a mapping of user IDs to names
+      const userNames = {};
+      
+      // Get the current user's name from any friendship
+      let currentUserName = `User ${userId}`;
+      if (friends.length > 0) {
+        const firstFriendship = friends[0];
+        const currentUser = firstFriendship.userId === userId ? firstFriendship.user : firstFriendship.friend;
+        if (currentUser) {
+          const user = currentUser as any;
+          currentUserName = [user.firstName, user.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim() || currentUserName;
+        }
+      }
+      userNames[userId] = currentUserName;
+      
+      // Add all friend names to the mapping
+      friends.forEach(friendship => {
+        const friendId = friendship.userId === userId ? friendship.friendId : friendship.userId;
+        const friendUser = friendship.userId === userId ? friendship.friend : friendship.user;
+        
+        if (friendUser) {
+          const user = friendUser as any;
+          const name = [user.firstName, user.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+          
+          userNames[friendId] = name || `Friend ${friendId}`;
+        }
+      });
+      
+      // Get friends' photos if there are any friends
+      let friendPhotos: UserPhotoEntity[] = [];
+      if (friendIds.length > 0) {
+        friendPhotos = await this.userPhotoRepository.find({
+          where: { userId: In(friendIds) },
+          order: { createdAt: 'DESC' },
+          take: Math.floor(maxPhotos / 2), // Half of max photos from friends
+        });
+      }
+      
+      // Combine all photos
+      const allPhotos = [...userPhotos, ...friendPhotos];
+      
+      // Get file details for all photos
+      const fileIds = allPhotos.map(photo => photo.fileId);
+      const files = fileIds.length > 0 ? await this.fileRepository.findBy({ id: In(fileIds) }) : [];
+      
+      // Format the response with detailed photo information
+      const processedPhotos = allPhotos.map(photo => {
+        const file = files.find(f => f.id === photo.fileId);
+        const userName = userNames[photo.userId] || `User ${photo.userId}`;
+        
+        return {
+          id: photo.id,
+          fileId: photo.fileId,
+          userId: photo.userId,
+          userName: userName, // Add user name to the response
+          isOwnPhoto: photo.userId === userId,
+          createdAt: photo.createdAt,
+          url: file ? this.getPhotoUrl(file.id, file.path) : null,
+          path: file ? file.path : null,
+        };
+      });
+      
+      return {
+        userId,
+        totalPhotos: processedPhotos.length,
+        userPhotosCount: userPhotos.length,
+        friendPhotosCount: friendPhotos.length,
+        photos: processedPhotos,
+      };
+    } catch (error) {
+      console.error('Error fetching photos for AI analysis:', error);
+      throw new BadRequestException(`Failed to fetch photos for AI: ${error.message}`);
+    }
+  }
+
   async getPhoto(photoId: string, userId: number) {
     const photo = await this.userPhotoRepository.findOne({
       where: { id: photoId },

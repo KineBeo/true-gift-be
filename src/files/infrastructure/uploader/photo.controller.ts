@@ -103,6 +103,18 @@ export class PhotoController {
     return this.photoService.getUserPhotos(req.user.id, { page, limit });
   }
 
+  @Get('ai/user-content')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get photos for AI analysis' })
+  @ApiResponse({ 
+    status: 200,
+    description: 'Returns photos from the user and their friends for AI analysis'
+  })
+  async getPhotosForAI(@Request() req, @Query('max_photos') maxPhotos = 50) {
+    return this.photoService.getPhotosForAI(req.user.id, maxPhotos);
+  }
+
   @Get('friends/:friendId')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
