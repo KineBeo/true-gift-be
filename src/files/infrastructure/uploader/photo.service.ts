@@ -768,7 +768,7 @@ export class PhotoService {
   async getPhotosForAI(userId: number, maxPhotos: number = 50): Promise<any> {
     try {
       // Get user's own photos (most recent first)
-      const userPhotos = await this.userPhotoRepository.find({
+      const userPhotoEntities = await this.userPhotoRepository.find({
         where: { userId },
         order: { createdAt: 'DESC' },
         take: Math.ceil(maxPhotos / 2), // Half of max photos from user
@@ -816,73 +816,55 @@ export class PhotoService {
       });
       
       // Get friends' photos if there are any friends
-      let friendPhotos: UserPhotoEntity[] = [];
+      let friendPhotoEntities: UserPhotoEntity[] = [];
       if (friendIds.length > 0) {
-        friendPhotos = await this.userPhotoRepository.find({
+        friendPhotoEntities = await this.userPhotoRepository.find({
           where: { userId: In(friendIds) },
           order: { createdAt: 'DESC' },
           take: Math.floor(maxPhotos / 2), // Half of max photos from friends
         });
       }
       
-      // Combine all photos
-      const allPhotos = [...userPhotos, ...friendPhotos];
-      
-      // Get file details for all photos
-      const fileIds = allPhotos.map(photo => photo.fileId);
+      // Get all file IDs from both user and friend photos
+      const allPhotoEntities = [...userPhotoEntities, ...friendPhotoEntities];
+      const fileIds = allPhotoEntities.map(photo => photo.fileId);
       const files = fileIds.length > 0 ? await this.fileRepository.findBy({ id: In(fileIds) }) : [];
       
-      // Format the response with detailed photo information
-      const processedPhotos = allPhotos.map(photo => {
+      // Process user photos
+      const processedUserPhotos = userPhotoEntities.map(photo => {
         const file = files.find(f => f.id === photo.fileId);
-        const userName = userNames[photo.userId] || `User ${photo.userId}`;
-        
         return {
           id: photo.id,
           fileId: photo.fileId,
           userId: photo.userId,
-          userName: userName, // Add user name to the response
-          isOwnPhoto: photo.userId === userId,
+          userName: userNames[photo.userId] || `User ${photo.userId}`,
           createdAt: photo.createdAt,
           url: file ? this.getPhotoUrl(file.id, file.path) : null,
           path: file ? file.path : null,
         };
       });
       
-      // Format friendships for the response
-      const friendships = friends.map(friendship => {
-        const friendId = friendship.userId === userId ? friendship.friendId : friendship.userId;
+      // Process friend photos
+      const processedFriendPhotos = friendPhotoEntities.map(photo => {
+        const file = files.find(f => f.id === photo.fileId);
         return {
-          userId: friendId,
-          userName: userNames[friendId] || `User ${friendId}`,
-          status: friendship.isBlocked ? 'blocked' : (friendship.isAccepted ? 'accepted' : 'pending'),
-          isBlocked: friendship.isBlocked,
-          createdAt: friendship.createdAt
+          id: photo.id,
+          fileId: photo.fileId,
+          userId: photo.userId,
+          userName: userNames[photo.userId] || `User ${photo.userId}`,
+          createdAt: photo.createdAt,
+          url: file ? this.getPhotoUrl(file.id, file.path) : null,
+          path: file ? file.path : null,
         };
       });
       
-      // Deduplicate friendships by userId (keep only the most recent entry for each friend)
-      const uniqueFriendships = [];
-      const friendMap = new Map();
-      
-      // Group by userId and keep the most recent one
-      friendships.forEach(friendship => {
-        const existingFriendship = friendMap.get(friendship.userId);
-        if (!existingFriendship || new Date(friendship.createdAt) > new Date(existingFriendship.createdAt)) {
-          friendMap.set(friendship.userId, friendship);
-        }
-      });
-      
-      // Convert the Map back to an array
-      const deduplicatedFriendships = Array.from(friendMap.values());
-      
       return {
         userId,
-        totalPhotos: processedPhotos.length,
-        userPhotosCount: userPhotos.length,
-        friendPhotosCount: friendPhotos.length,
-        photos: processedPhotos,
-        friendships: deduplicatedFriendships // Use deduplicated friendships array
+        totalPhotos: allPhotoEntities.length,
+        userPhotosCount: processedUserPhotos.length,
+        friendPhotosCount: processedFriendPhotos.length,
+        userPhotos: processedUserPhotos,
+        friendPhotos: processedFriendPhotos
       };
     } catch (error) {
       console.error('Error fetching photos for AI analysis:', error);
