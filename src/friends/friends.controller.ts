@@ -60,8 +60,9 @@ export class FriendsController {
   @ApiOperation({ summary: 'Lấy danh sách bạn bè' })
   @ApiResponse({ status: 200, type: [FriendsDto] })
   @HttpCode(HttpStatus.OK)
-  findAll(@Request() req, @Query() findAllFriendsDto: FindAllFriendsDto) {
-    return this.friendsService.findAll(req.user, findAllFriendsDto);
+  async findAll(@Request() req, @Query() findAllFriendsDto: FindAllFriendsDto) {
+    const result = await this.friendsService.findAll(req.user, findAllFriendsDto);
+    return this.removePasswordFromResponse(result);
   }
 
   @Get('requests')
@@ -72,15 +73,16 @@ export class FriendsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @HttpCode(HttpStatus.OK)
-  getFriendRequests(
+  async getFriendRequests(
     @Request() req,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.friendsService.getFriendRequests(req.user.id, {
+    const result = await this.friendsService.getFriendRequests(req.user.id, {
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 10,
     });
+    return this.removePasswordFromResponse(result);
   }
 
   @Post(':friendId/accept')
@@ -115,8 +117,12 @@ export class FriendsController {
   @ApiOperation({ summary: 'Lấy thông tin một bạn bè' })
   @ApiResponse({ status: 200, type: FriendsDto })
   @HttpCode(HttpStatus.OK)
-  findOne(@Request() req, @Param('id') id: string) {
-    return this.friendsService.findOne(req.user.id, id);
+  async findOne(@Request() req, @Param('id') id: string) {
+    const result = await this.friendsService.findOne(req.user.id, id);
+    if (result) {
+      return this.removePasswordFromUser(result);
+    }
+    return result;
   }
 
   @Patch(':id')
@@ -125,12 +131,16 @@ export class FriendsController {
   @ApiOperation({ summary: 'Cập nhật trạng thái bạn bè' })
   @ApiResponse({ status: 200, type: FriendsDto })
   @HttpCode(HttpStatus.OK)
-  update(
+  async update(
     @Request() req,
     @Param('id') id: string,
     @Body() updateFriendsDto: UpdateFriendsDto,
   ) {
-    return this.friendsService.update(req.user.id, id, updateFriendsDto);
+    const result = await this.friendsService.update(req.user.id, id, updateFriendsDto);
+    if (result) {
+      return this.removePasswordFromUser(result);
+    }
+    return result;
   }
 
   @Delete(':id')
@@ -141,5 +151,40 @@ export class FriendsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Request() req, @Param('id') id: string) {
     return this.friendsService.remove(req.user.id, id);
+  }
+  
+  /**
+   * Remove password from user objects in a friends response object
+   */
+  private removePasswordFromResponse(response: { data: FriendsDto[]; total: number }) {
+    const { data, total } = response;
+    
+    const sanitizedData = data.map(item => this.removePasswordFromUser(item));
+    
+    return {
+      data: sanitizedData,
+      total,
+    };
+  }
+  
+  /**
+   * Remove password from user and friend objects in a single friend object
+   */
+  private removePasswordFromUser(friendItem: FriendsDto) {
+    const clone = { ...friendItem };
+    
+    if (clone.user && 'password' in clone.user) {
+      // Use type casting to access and delete the password property
+      const user = clone.user as any;
+      delete user.password;
+    }
+    
+    if (clone.friend && 'password' in clone.friend) {
+      // Use type casting to access and delete the password property
+      const friend = clone.friend as any;
+      delete friend.password;
+    }
+    
+    return clone;
   }
 }

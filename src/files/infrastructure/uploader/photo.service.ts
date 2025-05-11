@@ -849,12 +849,40 @@ export class PhotoService {
         };
       });
       
+      // Format friendships for the response
+      const friendships = friends.map(friendship => {
+        const friendId = friendship.userId === userId ? friendship.friendId : friendship.userId;
+        return {
+          userId: friendId,
+          userName: userNames[friendId] || `User ${friendId}`,
+          status: friendship.isBlocked ? 'blocked' : (friendship.isAccepted ? 'accepted' : 'pending'),
+          isBlocked: friendship.isBlocked,
+          createdAt: friendship.createdAt
+        };
+      });
+      
+      // Deduplicate friendships by userId (keep only the most recent entry for each friend)
+      const uniqueFriendships = [];
+      const friendMap = new Map();
+      
+      // Group by userId and keep the most recent one
+      friendships.forEach(friendship => {
+        const existingFriendship = friendMap.get(friendship.userId);
+        if (!existingFriendship || new Date(friendship.createdAt) > new Date(existingFriendship.createdAt)) {
+          friendMap.set(friendship.userId, friendship);
+        }
+      });
+      
+      // Convert the Map back to an array
+      const deduplicatedFriendships = Array.from(friendMap.values());
+      
       return {
         userId,
         totalPhotos: processedPhotos.length,
         userPhotosCount: userPhotos.length,
         friendPhotosCount: friendPhotos.length,
         photos: processedPhotos,
+        friendships: deduplicatedFriendships // Use deduplicated friendships array
       };
     } catch (error) {
       console.error('Error fetching photos for AI analysis:', error);
