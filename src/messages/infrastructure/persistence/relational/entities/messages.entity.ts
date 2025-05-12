@@ -15,6 +15,10 @@ import { FileEntity } from '../../../../../files/infrastructure/persistence/rela
 @Entity({
   name: 'messages',
 })
+@Index('idx_sender_receiver', ['senderId', 'receiverId'])
+@Index('idx_receiver_sender', ['receiverId', 'senderId'])
+@Index('idx_sender_receiver_is_deleted', ['senderId', 'receiverId', 'isDeleted'])
+@Index('idx_receiver_sender_is_deleted', ['receiverId', 'senderId', 'isDeleted'])
 export class messagesEntity extends EntityRelationalHelper {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -43,12 +47,15 @@ export class messagesEntity extends EntityRelationalHelper {
   image: FileEntity | null;
 
   @Column({ default: false })
+  @Index()
   isRead: boolean;
 
   @Column({ default: false })
+  @Index()
   isDeleted: boolean;
 
   @CreateDateColumn()
+  @Index()
   createdAt: Date;
 
   @UpdateDateColumn()

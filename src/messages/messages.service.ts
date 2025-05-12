@@ -9,12 +9,17 @@ import { UpdateMessagesDto } from './dto/update-messages.dto';
 import { messagesRepository } from './infrastructure/persistence/messages.repository';
 import { MessagesDto } from './dto/messages.dto';
 import { FriendsService } from '../friends/friends.service';
+import { RedisCacheService } from '../common/cache/redis-cache.service';
+import { Logger } from '@nestjs/common';
 
 @Injectable()
 export class MessagesService {
+  private readonly logger = new Logger(MessagesService.name);
+  
   constructor(
     private readonly messagesRepository: messagesRepository,
     private readonly friendsService: FriendsService,
+    private readonly cacheService: RedisCacheService,
   ) {}
 
   async create(
@@ -52,7 +57,20 @@ export class MessagesService {
       messageData.image = { id: createMessagesDto.imageId };
     }
 
-    return this.messagesRepository.create(messageData);
+    const message = await this.messagesRepository.create(messageData);
+    
+    // Invalidate cache sau khi tạo tin nhắn mới
+    try {
+      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
+      await this.cacheService.delPattern(`messages:conversations:${createMessagesDto.receiverId}*`);
+      await this.cacheService.delPattern(`messages:thread:${userId}:${createMessagesDto.receiverId}*`);
+      await this.cacheService.delPattern(`messages:thread:${createMessagesDto.receiverId}:${userId}*`);
+      this.logger.debug('Cache invalidated after creating new message');
+    } catch (error) {
+      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
+    }
+    
+    return message;
   }
 
   async findAll(
@@ -62,10 +80,26 @@ export class MessagesService {
     const page = findAllMessagesDto.page || 1;
     const limit = findAllMessagesDto.limit || 20;
     
+    // Nếu đang tìm tin nhắn với một người cụ thể, kiểm tra cache
+    if (findAllMessagesDto.receiverId) {
+      const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}`;
+      try {
+        const cachedMessages = await this.cacheService.get<{ data: MessagesDto[]; meta: { total: number } }>(cacheKey);
+        
+        if (cachedMessages) {
+          this.logger.debug(`Cache hit for ${cacheKey}`);
+          return cachedMessages;
+        }
+      } catch (error) {
+        this.logger.warn(`Error getting cache: ${error.message}`);
+      }
+    }
+    
     try {
       // Lấy tin nhắn giữa người dùng và một người khác
       let result;
-      console.log("ReceiverId", findAllMessagesDto.receiverId);
+      this.logger.debug(`Finding messages for user ${userId} with receiverId: ${findAllMessagesDto.receiverId}`);
+      
       if (findAllMessagesDto.receiverId) {
         result = await this.messagesRepository.findAll({
           where: [
@@ -86,6 +120,17 @@ export class MessagesService {
             createdAt: 'ASC',
           },
         });
+        
+        // Cache kết quả nếu tìm thấy tin nhắn
+        if (result && result.data) {
+          const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}`;
+          try {
+            await this.cacheService.set(cacheKey, result, 300); // Cache trong 5 phút
+            this.logger.debug(`Cached message thread at ${cacheKey}`);
+          } catch (error) {
+            this.logger.warn(`Failed to cache message thread: ${error.message}`);
+          }
+        }
       } else {
         // Lấy tất cả tin nhắn của người dùng
         result = await this.messagesRepository.findAll({
@@ -109,7 +154,7 @@ export class MessagesService {
         }
       };
     } catch (error) {
-      console.error('Lỗi khi tìm tin nhắn:', error);
+      this.logger.error(`Lỗi khi tìm tin nhắn: ${error.message}`);
       // Trả về mảng rỗng nếu có lỗi
       return {
         data: [],
@@ -123,6 +168,19 @@ export class MessagesService {
     page = 1,
     limit = 10,
   ): Promise<{ data: any[]; total: number }> {
+    // Kiểm tra cache
+    const cacheKey = `messages:conversations:${userId}:${page}:${limit}`;
+    try {
+      const cachedConversations = await this.cacheService.get<{ data: any[]; total: number }>(cacheKey);
+      
+      if (cachedConversations) {
+        this.logger.debug(`Cache hit for ${cacheKey}`);
+        return cachedConversations;
+      }
+    } catch (error) {
+      this.logger.warn(`Error getting cache: ${error.message}`);
+    }
+    
     try {
       // Lấy danh sách người đã nhắn tin
       const { data: messages, total } = await this.messagesRepository.findAll({
@@ -237,28 +295,62 @@ export class MessagesService {
       const endIndex = startIndex + limit;
       const paginatedData = conversations.slice(startIndex, endIndex);
 
+      // Cache kết quả nếu tìm thấy cuộc trò chuyện
+      if (paginatedData.length > 0) {
+        try {
+          await this.cacheService.set(cacheKey, { data: paginatedData, total: conversations.length }, 300); // Cache trong 5 phút
+          this.logger.debug(`Cached conversation list at ${cacheKey}`);
+        } catch (error) {
+          this.logger.warn(`Failed to cache conversation list: ${error.message}`);
+        }
+      }
+
       return {
         data: paginatedData,
         total: conversations.length,
       };
     } catch (error) {
-      console.error('Lỗi khi lấy danh sách cuộc trò chuyện:', error);
+      this.logger.error('Lỗi khi lấy danh sách cuộc trò chuyện:', error);
       return { data: [], total: 0 };
     }
   }
 
   async findOne(id: string, userId: number): Promise<MessagesDto> {
+    // Kiểm tra cache
+    const cacheKey = `messages:single:${id}`;
+    try {
+      const cachedMessage = await this.cacheService.get<MessagesDto>(cacheKey);
+      
+      if (cachedMessage) {
+        this.logger.debug(`Cache hit for ${cacheKey}`);
+        return cachedMessage;
+      }
+    } catch (error) {
+      this.logger.warn(`Error getting cache: ${error.message}`);
+    }
+    
     const message = await this.messagesRepository.findOne({
-      where: { id } as any,
+      where: {
+        id: id,
+        // Đảm bảo người dùng có quyền xem tin nhắn này
+        $or: [
+          { senderId: userId },
+          { receiverId: userId },
+        ],
+      } as any,
+      // Áp dụng các mối quan hệ khác nếu cần
     });
 
     if (!message) {
-      throw new NotFoundException(`Tin nhắn với ID "${id}" không tồn tại`);
+      throw new NotFoundException('Không tìm thấy tin nhắn');
     }
 
-    // Kiểm tra quyền truy cập tin nhắn
-    if (message.senderId !== userId && message.receiverId !== userId) {
-      throw new Error('Không có quyền truy cập tin nhắn này');
+    // Cache kết quả
+    try {
+      await this.cacheService.set(cacheKey, message, 300); // Cache trong 5 phút
+      this.logger.debug(`Cached message at ${cacheKey}`);
+    } catch (error) {
+      this.logger.warn(`Failed to cache message: ${error.message}`);
     }
 
     return message;
@@ -269,47 +361,120 @@ export class MessagesService {
     userId: number,
     updateMessagesDto: UpdateMessagesDto,
   ): Promise<MessagesDto> {
-    const message = await this.findOne(id, userId);
+    // Tìm tin nhắn để cập nhật
+    const message = await this.messagesRepository.findOne({
+      where: {
+        id: id,
+        // Đảm bảo người dùng có quyền cập nhật tin nhắn này
+        $or: [
+          { senderId: userId },
+          { receiverId: userId },
+        ],
+      } as any,
+    });
 
-    // Chỉ người nhận tin nhắn mới có thể đánh dấu đã đọc
-    if (
-      updateMessagesDto.isRead !== undefined &&
-      message.receiverId !== userId
-    ) {
-      throw new Error('Không có quyền đánh dấu tin nhắn này');
+    if (!message) {
+      throw new NotFoundException('Không tìm thấy tin nhắn');
     }
 
-    // Chỉ người gửi hoặc người nhận mới có thể xóa tin nhắn của mình
-    if (updateMessagesDto.isDeleted !== undefined) {
-      if (message.senderId !== userId && message.receiverId !== userId) {
-        throw new Error('Không có quyền xóa tin nhắn này');
+    // Cập nhật tin nhắn
+    await this.messagesRepository.update(id, updateMessagesDto);
+    
+    // Lấy tin nhắn đã cập nhật
+    const updated = await this.messagesRepository.findOne({
+      where: { id: id } as any,
+    });
+    
+    if (!updated) {
+      throw new NotFoundException('Không thể tìm thấy tin nhắn sau khi cập nhật');
+    }
+
+    // Invalidate cache
+    try {
+      await this.cacheService.del(`messages:single:${id}`);
+      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
+      
+      // Invalidate cache cho người nhận tin nhắn
+      if (message.senderId === userId) {
+        await this.cacheService.delPattern(`messages:conversations:${message.receiverId}*`);
+        await this.cacheService.delPattern(`messages:thread:${userId}:${message.receiverId}*`);
+        await this.cacheService.delPattern(`messages:thread:${message.receiverId}:${userId}*`);
+      } else {
+        await this.cacheService.delPattern(`messages:conversations:${message.senderId}*`);
+        await this.cacheService.delPattern(`messages:thread:${userId}:${message.senderId}*`);
+        await this.cacheService.delPattern(`messages:thread:${message.senderId}:${userId}*`);
       }
+      
+      this.logger.debug('Cache invalidated after updating message');
+    } catch (error) {
+      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
     }
 
-    await this.messagesRepository.update(id, updateMessagesDto as any);
-    return this.findOne(id, userId);
+    return updated;
   }
 
   async markAsRead(userId: number, senderId: number): Promise<void> {
-    // Đánh dấu tất cả tin nhắn từ senderId gửi cho userId là đã đọc
-    const whereCondition = {
-      senderId,
-      receiverId: userId,
-      isRead: false
-    } as any;
+    // Đánh dấu tất cả tin nhắn từ senderId gửi đến userId là đã đọc
+    await this.messagesRepository.updateMany(
+      {
+        senderId: senderId,
+        receiverId: userId,
+        isRead: false,
+      } as any,
+      { isRead: true },
+    );
     
-    await this.messagesRepository.updateMany(whereCondition, { isRead: true } as any);
+    // Invalidate cache
+    try {
+      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
+      await this.cacheService.delPattern(`messages:conversations:${senderId}*`);
+      await this.cacheService.delPattern(`messages:thread:${userId}:${senderId}*`);
+      await this.cacheService.delPattern(`messages:thread:${senderId}:${userId}*`);
+      this.logger.debug('Cache invalidated after marking messages as read');
+    } catch (error) {
+      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
+    }
   }
 
   async remove(id: string, userId: number): Promise<void> {
-    const message = await this.findOne(id, userId);
+    // Tìm tin nhắn để xóa
+    const message = await this.messagesRepository.findOne({
+      where: { 
+        id: id,
+        // Đảm bảo người dùng có quyền xóa tin nhắn này
+        $or: [
+          { senderId: userId },
+          { receiverId: userId },
+        ],
+      } as any,
+    });
 
-    // Kiểm tra quyền xóa tin nhắn
-    if (message.senderId !== userId && message.receiverId !== userId) {
-      throw new Error('Không có quyền xóa tin nhắn này');
+    if (!message) {
+      throw new NotFoundException('Không tìm thấy tin nhắn');
     }
 
-    // Đánh dấu là đã xóa thay vì xóa thật sự
-    await this.messagesRepository.update(id, { isDeleted: true } as any);
+    // Xóa tin nhắn (soft delete)
+    await this.messagesRepository.update(id, { isDeleted: true });
+    
+    // Invalidate cache
+    try {
+      await this.cacheService.del(`messages:single:${id}`);
+      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
+      
+      // Invalidate cache cho người nhận tin nhắn
+      if (message.senderId === userId) {
+        await this.cacheService.delPattern(`messages:conversations:${message.receiverId}*`);
+        await this.cacheService.delPattern(`messages:thread:${userId}:${message.receiverId}*`);
+        await this.cacheService.delPattern(`messages:thread:${message.receiverId}:${userId}*`);
+      } else {
+        await this.cacheService.delPattern(`messages:conversations:${message.senderId}*`);
+        await this.cacheService.delPattern(`messages:thread:${userId}:${message.senderId}*`);
+        await this.cacheService.delPattern(`messages:thread:${message.senderId}:${userId}*`);
+      }
+      
+      this.logger.debug('Cache invalidated after removing message');
+    } catch (error) {
+      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
+    }
   }
 }

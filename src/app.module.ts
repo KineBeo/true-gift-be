@@ -31,6 +31,7 @@ import { PhotosModule } from './files/infrastructure/uploader/photos.module';
 import { FriendsModule } from './friends/friends.module';
 import { MessagesModule } from './messages/messages.module';
 import { ChallengeModule } from './challenge/challenge.module';
+import { CacheModule } from './common/cache/cache.module';
 
 // <database-block>
 const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
@@ -66,6 +67,7 @@ const infrastructureDatabaseModule = (databaseConfig() as DatabaseConfig)
       envFilePath: ['.env'],
     }),
     infrastructureDatabaseModule,
+    CacheModule,
     I18nModule.forRootAsync({
       useFactory: (configService: ConfigService<AllConfigType>) => ({
         fallbackLanguage: configService.getOrThrow('app.fallbackLanguage', {
