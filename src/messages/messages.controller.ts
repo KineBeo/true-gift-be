@@ -19,6 +19,8 @@ import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@ne
 import { FindAllMessagesDto } from './dto/find-all-messages.dto';
 import { MessagesDto } from './dto/messages.dto';
 import { AuthGuard } from '@nestjs/passport';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 
 @ApiTags('Messages')
 @Controller({
@@ -26,7 +28,45 @@ import { AuthGuard } from '@nestjs/passport';
   version: '1',
 })
 export class MessagesController {
-  constructor(private readonly messagesService: MessagesService) {}
+  constructor(
+    private readonly messagesService: MessagesService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  @Get('test-token')
+  @ApiOperation({ summary: 'Tạo token test cho WebSocket (chỉ dùng cho dev)' })
+  @ApiResponse({ status: 200 })
+  @HttpCode(HttpStatus.OK)
+  async getTestToken(@Query('userId') userId: string) {
+    // Tạo token test cho WebSocket connection
+    // CHỈ SỬ DỤNG TRONG MÔI TRƯỜNG DEVELOPMENT
+    if (this.configService.get('NODE_ENV') !== 'development') {
+      return { error: 'This endpoint is only available in development mode' };
+    }
+
+    const userIdNum = parseInt(userId, 10);
+    if (isNaN(userIdNum)) {
+      return { error: 'userId must be a number' };
+    }
+
+    const payload = {
+      sub: userIdNum,
+      id: userIdNum,
+      role: 'user'
+    };
+
+    const token = this.jwtService.sign(payload, {
+      secret: this.configService.get('AUTH_JWT_SECRET'),
+      expiresIn: '1h'
+    });
+
+    return {
+      userId: userIdNum,
+      token,
+      instructions: 'Use this token without Bearer prefix in WebSocket connection'
+    };
+  }
 
   @Post()
   @UseGuards(AuthGuard('jwt'))

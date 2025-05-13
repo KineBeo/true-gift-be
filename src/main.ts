@@ -22,13 +22,13 @@ async function bootstrap() {
   const configService = app.get(ConfigService<AllConfigType>);
 
   // Thiết lập Redis Adapter cho WebSockets
-  const redisIoAdapter = new RedisIoAdapter(app);
   try {
+    const redisIoAdapter = new RedisIoAdapter(app);
     await redisIoAdapter.connectToRedis();
     app.useWebSocketAdapter(redisIoAdapter);
-    logger.log('Using Redis adapter for WebSockets');
+    logger.log('Redis adapter for WebSockets enabled');
   } catch (error: any) {
-    logger.error(`Failed to connect to Redis, using default adapter: ${error.message}`);
+    logger.error(`Could not connect to Redis, using default adapter: ${error.message}`);
   }
 
   app.enableCors({

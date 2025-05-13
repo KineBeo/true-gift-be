@@ -45,6 +45,10 @@ export class MessagesService {
       throw new Error('Không thể gửi tin nhắn cho người này - đã bị chặn');
     }
 
+    // PRE-EMPTIVELY CLEAR CACHE before creating a message to ensure we won't get stale data
+    this.logger.log(`Tiến hành xóa cache TRƯỚC khi tạo tin nhắn mới`);
+    await this.clearMessageCache(userId, createMessagesDto.receiverId);
+
     // Tạo message object với các thuộc tính cơ bản
     const messageData: any = {
       senderId: userId,
@@ -57,20 +61,57 @@ export class MessagesService {
       messageData.image = { id: createMessagesDto.imageId };
     }
 
+    // Lưu tin nhắn vào database
     const message = await this.messagesRepository.create(messageData);
     
-    // Invalidate cache sau khi tạo tin nhắn mới
-    try {
-      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
-      await this.cacheService.delPattern(`messages:conversations:${createMessagesDto.receiverId}*`);
-      await this.cacheService.delPattern(`messages:thread:${userId}:${createMessagesDto.receiverId}*`);
-      await this.cacheService.delPattern(`messages:thread:${createMessagesDto.receiverId}:${userId}*`);
-      this.logger.debug('Cache invalidated after creating new message');
-    } catch (error) {
-      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
-    }
+    // Clear cache again AFTER creating the message to ensure fresh data
+    this.logger.log(`Tiến hành xóa cache SAU khi tạo tin nhắn mới ${message.id}`);
+    await this.clearMessageCache(userId, createMessagesDto.receiverId);
     
     return message;
+  }
+
+  // Consolidated cache clearing method to ensure consistent cache invalidation
+  private async clearMessageCache(userId: number, receiverId: number): Promise<void> {
+    // Chuẩn bị danh sách các key cần xóa trực tiếp
+    const keysToDelete = [
+      // Conversation cache keys - direct page 1 (most common)
+      `messages:conversations:${userId}:1:10`, 
+      `messages:conversations:${receiverId}:1:10`,
+      // Thread cache keys - page 1 (most common) - cả ASC và DESC
+      `messages:thread:${userId}:${receiverId}:1:20`,
+      `messages:thread:${receiverId}:${userId}:1:20`,
+      `messages:thread:${userId}:${receiverId}:1:20:desc`,
+      `messages:thread:${receiverId}:${userId}:1:20:desc`,
+      // Thread cache keys - page 1 với limit 50 (thường dùng)
+      `messages:thread:${userId}:${receiverId}:1:50`,
+      `messages:thread:${receiverId}:${userId}:1:50`,
+      `messages:thread:${userId}:${receiverId}:1:50:desc`,
+      `messages:thread:${receiverId}:${userId}:1:50:desc`,
+    ];
+    
+    try {
+      // 1. Xóa trực tiếp các key thông dụng
+      await this.cacheService.directDeleteKeys(keysToDelete);
+      this.logger.log(`Đã xóa trực tiếp ${keysToDelete.length} cache keys`);
+      
+      // 2. Xóa theo pattern để đảm bảo tất cả cache liên quan đều được làm mới
+      const patterns = [
+        `messages:conversations:${userId}:*`,
+        `messages:conversations:${receiverId}:*`,
+        `messages:thread:${userId}:${receiverId}:*`,
+        `messages:thread:${receiverId}:${userId}:*`,
+      ];
+      
+      for (const pattern of patterns) {
+        await this.cacheService.delPattern(pattern);
+        this.logger.log(`Đã xóa cache theo pattern: ${pattern}`);
+      }
+      
+      this.logger.log(`Đã xóa cache thành công`);
+    } catch (error) {
+      this.logger.error(`Lỗi khi xóa cache: ${error.message}`);
+    }
   }
 
   async findAll(
@@ -80,15 +121,33 @@ export class MessagesService {
     const page = findAllMessagesDto.page || 1;
     const limit = findAllMessagesDto.limit || 20;
     
+    // ALWAYS CLEAR CACHE before finding messages to ensure fresh data
+    if (findAllMessagesDto.receiverId) {
+      this.logger.log(`Chủ động xóa cache thread messages trước khi truy vấn từ người dùng ${userId} đến ${findAllMessagesDto.receiverId}`);
+      try {
+        await this.clearMessageCache(userId, findAllMessagesDto.receiverId);
+      } catch (error) {
+        this.logger.warn(`Không thể xóa cache thread messages: ${error.message}`);
+      }
+    }
+    
     // Nếu đang tìm tin nhắn với một người cụ thể, kiểm tra cache
     if (findAllMessagesDto.receiverId) {
-      const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}`;
+      // ALWAYS use DESC sorting for consistent caching
+      const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}:desc`;
+      this.logger.log(`Checking cache with key: ${cacheKey}`);
       try {
         const cachedMessages = await this.cacheService.get<{ data: MessagesDto[]; meta: { total: number } }>(cacheKey);
         
         if (cachedMessages) {
-          this.logger.debug(`Cache hit for ${cacheKey}`);
+          this.logger.log(`Cache hit for ${cacheKey}, returning ${cachedMessages.data.length} messages`);
+          if (cachedMessages.data.length > 0) {
+            this.logger.log(`First message in cache: ${cachedMessages.data[0].content}`);
+            this.logger.log(`Last message in cache: ${cachedMessages.data[cachedMessages.data.length - 1].content}`);
+          }
           return cachedMessages;
+        } else {
+          this.logger.log(`Cache miss for ${cacheKey}`);
         }
       } catch (error) {
         this.logger.warn(`Error getting cache: ${error.message}`);
@@ -117,16 +176,31 @@ export class MessagesService {
           skip: (page - 1) * limit,
           take: limit,
           order: {
-            createdAt: 'ASC',
+            createdAt: 'DESC', // Sắp xếp giảm dần - mới nhất lên đầu
           },
         });
         
+        // Log the raw data we found from the database
+        if (result && result.data) {
+          this.logger.log(`Found ${result.data.length} messages in database`);
+          if (result.data.length > 0) {
+            this.logger.log(`First message from DB: ${result.data[0].content}`);
+            this.logger.log(`Last message from DB: ${result.data[result.data.length - 1].content}`);
+          }
+        }
+        
         // Cache kết quả nếu tìm thấy tin nhắn
         if (result && result.data) {
-          const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}`;
+          // ALWAYS use DESC sort in cache key
+          const cacheKey = `messages:thread:${userId}:${findAllMessagesDto.receiverId}:${page}:${limit}:desc`;
           try {
+            this.logger.log(`Setting cache for key: ${cacheKey} with ${result.data.length} messages`);
+            if (result.data.length > 0) {
+              this.logger.log(`First message being cached: ${result.data[0].content}`);
+              this.logger.log(`Last message being cached: ${result.data[result.data.length - 1].content}`);
+            }
             await this.cacheService.set(cacheKey, result, 300); // Cache trong 5 phút
-            this.logger.debug(`Cached message thread at ${cacheKey}`);
+            this.logger.log(`Successfully cached message thread at ${cacheKey}`);
           } catch (error) {
             this.logger.warn(`Failed to cache message thread: ${error.message}`);
           }
@@ -141,7 +215,7 @@ export class MessagesService {
           skip: (page - 1) * limit,
           take: limit,
           order: {
-            createdAt: 'ASC',
+            createdAt: 'DESC', // Sắp xếp giảm dần - mới nhất lên đầu
           },
         });
       }
@@ -168,14 +242,25 @@ export class MessagesService {
     page = 1,
     limit = 10,
   ): Promise<{ data: any[]; total: number }> {
+    // Xóa cache cũ trước khi kiểm tra (GIẢI PHÁP TẠM THỜI)
+    this.logger.log(`Chủ động xóa cache cũ trước khi lấy hội thoại cho người dùng ${userId}`);
+    try {
+      await this.cacheService.delPattern(`messages:conversations:${userId}:*`);
+    } catch (error) {
+      this.logger.warn(`Không thể xóa cache cũ: ${error.message}`);
+    }
+  
     // Kiểm tra cache
     const cacheKey = `messages:conversations:${userId}:${page}:${limit}`;
+    this.logger.log(`Đang tìm cache với key: ${cacheKey}`);
     try {
       const cachedConversations = await this.cacheService.get<{ data: any[]; total: number }>(cacheKey);
       
       if (cachedConversations) {
-        this.logger.debug(`Cache hit for ${cacheKey}`);
+        this.logger.log(`Cache hit for ${cacheKey}, returning ${cachedConversations.data.length} conversations`);
         return cachedConversations;
+      } else {
+        this.logger.log(`Cache miss for ${cacheKey}, sẽ truy vấn từ database`);
       }
     } catch (error) {
       this.logger.warn(`Error getting cache: ${error.message}`);
@@ -424,16 +509,9 @@ export class MessagesService {
       { isRead: true },
     );
     
-    // Invalidate cache
-    try {
-      await this.cacheService.delPattern(`messages:conversations:${userId}*`);
-      await this.cacheService.delPattern(`messages:conversations:${senderId}*`);
-      await this.cacheService.delPattern(`messages:thread:${userId}:${senderId}*`);
-      await this.cacheService.delPattern(`messages:thread:${senderId}:${userId}*`);
-      this.logger.debug('Cache invalidated after marking messages as read');
-    } catch (error) {
-      this.logger.warn(`Failed to invalidate cache: ${error.message}`);
-    }
+    // Xóa cache sau khi cập nhật
+    this.logger.log(`Xóa cache sau khi đánh dấu tin nhắn đã đọc từ ${senderId} đến ${userId}`);
+    await this.clearMessageCache(userId, senderId);
   }
 
   async remove(id: string, userId: number): Promise<void> {

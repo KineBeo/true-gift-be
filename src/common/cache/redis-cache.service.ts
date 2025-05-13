@@ -84,28 +84,77 @@ export class RedisCacheService {
 
   async delPattern(pattern: string): Promise<void> {
     if (!this.isReady) {
+      this.logger.warn(`Redis client not ready, skipping delPattern for pattern: ${pattern}`);
       return;
     }
+    
+    this.logger.log(`Starting to delete keys with pattern: ${pattern}`);
     
     try {
       // Tìm tất cả các key khớp với pattern
       let cursor = 0;
-      do {
-        const result = await this.client.scan(cursor, {
-          MATCH: pattern,
-          COUNT: 100
-        });
+      let totalDeleted = 0;
+      let allKeys: string[] = [];
+      
+      // Bước 1: Thu thập tất cả keys khớp với pattern
+      try {
+        do {
+          const result = await this.client.scan(cursor, {
+            MATCH: pattern,
+            COUNT: 100
+          });
+          
+          cursor = result.cursor;
+          
+          if (result.keys.length > 0) {
+            allKeys = [...allKeys, ...result.keys];
+          }
+        } while (cursor !== 0);
         
-        cursor = result.cursor;
-        
-        // Xóa các key đã tìm thấy
-        if (result.keys.length > 0) {
-          await this.client.del(result.keys);
-          this.logger.debug(`Deleted ${result.keys.length} keys with pattern: ${pattern}`);
+        this.logger.log(`Found ${allKeys.length} keys to delete for pattern: ${pattern}`);
+      } catch (scanError) {
+        this.logger.error(`Error scanning keys with pattern ${pattern}: ${scanError.message}`);
+        return;
+      }
+      
+      // Bước 2: Xóa keys theo lô nếu có
+      if (allKeys.length > 0) {
+        try {
+          // Giới hạn số lượng key xóa mỗi lần để tránh quá tải Redis
+          const batchSize = 100;
+          for (let i = 0; i < allKeys.length; i += batchSize) {
+            const batch = allKeys.slice(i, i + batchSize);
+            await this.client.del(batch);
+            totalDeleted += batch.length;
+          }
+          
+          this.logger.log(`Successfully deleted ${totalDeleted} keys with pattern: ${pattern}`);
+        } catch (deleteError) {
+          this.logger.error(`Error deleting keys: ${deleteError.message}`);
         }
-      } while (cursor !== 0);
+      } else {
+        this.logger.log(`No keys found matching pattern: ${pattern}`);
+      }
     } catch (e) {
-      this.logger.error(`Error deleting keys with pattern ${pattern}: ${e.message}`);
+      this.logger.error(`Error in delPattern operation for ${pattern}: ${e.message}`);
+      if (e.stack) {
+        this.logger.error(`Stack trace: ${e.stack}`);
+      }
+    }
+  }
+
+  // Thêm phương thức trực tiếp để xóa cache mà không cần phải scan
+  async directDeleteKeys(keys: string[]): Promise<void> {
+    if (!this.isReady || keys.length === 0) {
+      return;
+    }
+    
+    try {
+      this.logger.log(`Trực tiếp xóa ${keys.length} cache keys: ${keys.join(', ')}`);
+      const deleted = await this.client.del(keys);
+      this.logger.log(`Đã xóa thành công ${deleted} keys`);
+    } catch (e) {
+      this.logger.error(`Lỗi khi xóa keys trực tiếp: ${e.message}`);
     }
   }
 
